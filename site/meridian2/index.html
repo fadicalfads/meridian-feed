@@ -213,6 +213,11 @@ footer{margin-top:22px;font-size:12px;gap:4px}
 }
 .tk-head b,.lvsw button{white-space:nowrap}
 @media (max-width:520px){ .time small{display:none} .tk-head b i{display:none} .lvsw button{padding:7px 7px} }
+
+.pdk{display:flex;flex-wrap:wrap;gap:4px 12px;padding:7px 12px 0;border-top:1px solid var(--line);font:600 10.5px var(--mono);color:var(--mute)}
+.pdk span{display:inline-flex;align-items:center;gap:5px}
+.pdk i{width:10px;height:8px;border-radius:2px;background:var(--k);opacity:.75}
+.scap{border-top:0}
 </style>
 </head>
 <body>
@@ -268,6 +273,8 @@ function draw(upto, a, b){
   let lo = Math.min(...vis.map(x => x[3]), ...levels.map(l => l.p));
   let hi = Math.max(...vis.map(x => x[2]), ...levels.map(l => l.p));
   (V.path||[]).forEach(p => { lo = Math.min(lo, p[1]); hi = Math.max(hi, p[1]); });
+  (D.arrays||[]).forEach(g => { if(!(g.from && end < idx(g.from))){ lo = Math.min(lo, g.lo); hi = Math.max(hi, g.hi); } });
+  if(D.ote){ lo = Math.min(lo, D.ote.lo); hi = Math.max(hi, D.ote.hi); }
   const pad = (hi - lo) * .07; lo -= pad; hi += pad;
   const cw = (W - PL - PR) / (b - a + 1);
   const X = i => PL + (i - a + .5) * cw;
@@ -281,6 +288,19 @@ function draw(upto, a, b){
     if(t.endsWith(':00') && (+t.slice(0,2)) % (narrow ? 4 : 2) === 0 && X(i) - cw/2 > 22){
       s += `<line x1="${X(i)-cw/2}" x2="${X(i)-cw/2}" y1="${PT}" y2="${H-PB}" stroke="#1b2740"/>`
         +  `<text x="${X(i)-cw/2}" y="${H-10}" fill="${COL.mute}" font-size="11" text-anchor="middle" font-family="JetBrains Mono,monospace">${t}</text>`; } }
+  // PD arrays: FVG boxes by timeframe, from the candle that confirmed them until they were filled
+  const AC = {'15m':'#7aa2ff','45m':'#b08cff','4H':'#2dd4bf','Daily':'#f472b6'}, tags = [];
+  [...(D.arrays||[])].sort((p, q) => ({Daily:0,'4H':1,'45m':2,'15m':3})[p.tf] - ({Daily:0,'4H':1,'45m':2,'15m':3})[q.tf]).forEach(g => { if(g.from && end < idx(g.from)) return;
+    const i0 = g.from ? Math.max(idx(g.from), a) : a, stopAt = g.to && end >= idx(g.to) ? idx(g.to) : Math.min(end, b) + 1;
+    const i1 = Math.min(stopAt, b + 1); if(i1 <= i0) return; const c = AC[g.tf], x0 = X(i0) - cw/2, w = (i1 - i0) * cw;
+    s += `<rect x="${x0}" y="${Y(g.hi)}" width="${w}" height="${Math.max(Y(g.lo)-Y(g.hi),2)}" fill="${c}" opacity="${g.to && end >= idx(g.to) ? .07 : .16}" stroke="${c}" stroke-opacity=".45" stroke-width=".8"/>`
+      ; if(w > 34){ let ly = Y(g.hi) + 10; const lw = 62; for(let k = 0; k < 6 && tags.some(t => Math.abs(t.y - ly) < 10 && Math.abs(t.x - x0) < lw); k++) ly += 10;
+        tags.push({x: x0, y: ly}); s += `<text x="${x0+4}" y="${ly}" fill="${c}" font-size="9.5" font-weight="700" font-family="JetBrains Mono,monospace" paint-order="stroke" stroke="#0d1626" stroke-width="2.5">${g.tf} ${g.d==='bull'?'+':'−'}FVG</text>`; } });
+  // OTE band from the leg the desk measured
+  if(D.ote && !(D.ote.from && end < idx(D.ote.from))){ const o = D.ote, i0 = o.from ? Math.max(idx(o.from), a) : a, x0 = X(i0) - cw/2, x1 = W - PR + 4;
+    s += `<rect x="${x0}" y="${Y(o.hi)}" width="${x1-x0}" height="${Y(o.lo)-Y(o.hi)}" fill="${COL.gold}" opacity=".12"/>`
+      + `<line x1="${x0}" x2="${x1}" y1="${Y(o.mid)}" y2="${Y(o.mid)}" stroke="${COL.gold}" stroke-width="1.2" stroke-dasharray="2 3"/>`
+      + `<text x="${x1-4}" y="${Y(o.lo)+11}" text-anchor="end" fill="${COL.gold}" font-size="9.5" font-weight="700" font-family="JetBrains Mono,monospace" paint-order="stroke" stroke="#0d1626" stroke-width="2.5">OTE 70.5% ${o.mid.toFixed(5)}</text>`; }
   // levels, with labels nudged apart on the right
   const lab = levels.map(l => ({l, y: Y(l.p)})).sort((p, q) => p.y - q.y);
   for(let i = 1; i < lab.length; i++) if(lab[i].y - lab[i-1].y < 24) lab[i].y = lab[i-1].y + 24;
@@ -316,6 +336,10 @@ function draw(upto, a, b){
   if(upto == null) $('cap').innerHTML = V.cap;
 }
 
+function drawKey(){ const AC = {'15m':'#7aa2ff','45m':'#b08cff','4H':'#2dd4bf','Daily':'#f472b6'}; const k = $('pdk'); if(!k) return;
+  k.innerHTML = ['15m','45m','4H','Daily'].map(tf => { const n = (D.arrays||[]).filter(g => g.tf === tf).length;
+    return `<span style="--k:${AC[tf]}"><i></i>${tf} FVG${n ? '' : (D.off && D.off[tf] ? ' · off chart ' + D.off[tf] : ' · none open')}</span>`; }).join('')
+    + (D.ote ? `<span style="--k:#f5b70a"><i></i>OTE · ${D.ote.leg}</span>` : ''); }
 /* Replay: the full 15m picture as it stood at the first slot, then zoom in and print the session candle by candle. */
 function stop(){ if(timer){ clearInterval(timer); timer = null; } playing = false; const p = $('play'); if(p){ p.dataset.on = '0'; p.textContent = '▶ Replay'; } }
 function play(){
@@ -348,6 +372,7 @@ $('views').innerHTML = D.views.map((v,i)=>`<button data-v="${i}" aria-pressed="$
 $('views').addEventListener('click', e => { const b = e.target.closest('button'); if(!b) return; if(b.id === 'play') return play(); stop(); view = +b.dataset.v; syncViews(); draw(); });
 let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if(!playing) draw(); }, 150); });
 draw();
+drawKey();
 /* reading level */
 (function(){ const w = document.querySelector('.wrap'), bs = [...document.querySelectorAll('.lvsw button')]; if(!bs.length) return;
   function set(v){ w.dataset.lv = v; bs.forEach(b => b.setAttribute('aria-pressed', b.dataset.lv === v)); try{ localStorage.setItem('mlv', v); }catch(e){} }
