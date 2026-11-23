@@ -291,7 +291,7 @@ def main():
     ap.add_argument('--result', help='M1: the day\'s pips for the week strip, e.g. "+10.2" or "0 · no fill"')
     ap.add_argument('--push', action='store_true'); ap.add_argument('--dry', action='store_true')
     A = ap.parse_args()
-    day = date.fromisoformat(A.date) if A.date else datetime.utcnow().date()
+    day = date.fromisoformat(A.date) if A.date else datetime.now(__import__("datetime").timezone.utc).date()
     day0 = datetime.combine(day, datetime.min.time())
     m5 = to_uk(read_td(A.m5), A.ahead)
     if not m5: raise SystemExit('PUBLISH FAILED: no bars in ' + A.m5)
