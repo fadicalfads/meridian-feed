@@ -97,15 +97,16 @@ STAGE = ('<section class="stage" aria-label="Session chart"><header><div><strong
          '<div class="scap" id="cap"></div></section>')
 LV = {'Beginner': 'b', 'Intermediate': 'i', 'Pro': 'p'}
 
-def m1_page_parts(page):
+def m1_page_parts(page, keep=False):
     s = open(page, encoding='utf-8').read()
     tk = re.search(r'<div class="tk-row">.*?</div>\s*</section>', s, re.S)
     tracker = tk.group(0).rsplit('</section>', 1)[0] if tk else ''
     sub = re.search(r'<header class="mast">.*?<p>(.*?)</p>', s, re.S)
     feed = s[s.find('<div class="feed">') + 18: s.find('<section class="gloss') if '<section class="gloss' in s else s.find('</div>\n  <footer')]
-    feed = re.sub(r'<div class="vid">.*?</div>\s*</div>', '', feed, flags=re.S)        # media stay on the in-app page
-    feed = re.sub(r'<div class="gallery">.*?</div>(?=</div></article>|<)', '', feed, flags=re.S)
-    feed = re.sub(r'<(video|img)\b[^>]*>', '', feed)
+    if not keep:                                     # media hosted on the 'media' branch when keep=True (host_media)
+        feed = re.sub(r'<div class="vid">.*?</div>\s*</div>', '', feed, flags=re.S)
+        feed = re.sub(r'<div class="gallery">.*?</div>(?=</div></article>|<)', '', feed, flags=re.S)
+        feed = re.sub(r'<(video|img)\b[^>]*>', '', feed)
     def lv(m):
         if m.group(2) not in LV: return m.group(0)
         return f'<div class="nt" data-lv="{LV[m.group(2)]}"><h4>{m.group(1).strip()}</h4>{m.group(3)}</div>'
@@ -114,7 +115,7 @@ def m1_page_parts(page):
     arts = re.findall(r'<article.*?</article>', feed, flags=re.S)
     arts = [a for a in arts if not re.search(r'<div class="alert"[^>]*><b>\s*</b><span>\s*</span>', a)]   # never show empty alerts
     if not arts: raise SystemExit('PUBLISH FAILED: no posts found in the feed page ' + page)
-    arts[0] = arts[0][:-len('</div></article>')] + STAGE + '</div></article>'
+    arts[0] = arts[0][:-len('</div></article>')] + (('<div hidden>' + STAGE + '</div>') if keep else STAGE) + '</div></article>'
     return tracker, (sub.group(1).strip() if sub else ''), '\n'.join(arts)
 
 def week_html(title, days):
@@ -263,6 +264,82 @@ def m2_scorecard(state, b15, pair):
     head = ('Equilibrium came back by noon.' if eq_hit else 'No return to equilibrium by noon.') if kl else 'Scorecard'
     return head, rows, (eq_hit is not None) if kl else None
 
+# ---------------------------------------------------------------- media (the engine's chart images and videos)
+# Jason, 26 Nov 2026: the website should show the desk's own chart images and videos (the Beta 1 look), not the
+# browser-drawn chart. Files are shrunk (JPEG 1400px, video 720p) and pushed to a separate 'media' branch that holds
+# only today's files (one commit, force-pushed, so the repository never grows). Pages load them from jsDelivr by commit.
+CDN = 'https://cdn.jsdelivr.net/gh/fadicalfads/meridian-feed@{sha}/{desk}/{name}'
+
+def media_out(name, day):
+    stem, ext = os.path.splitext(name)
+    return f'{day}_{stem}.jpg' if ext.lower() == '.png' else f'{day}_{name}'
+
+def shrink(src, d, day):
+    import shutil
+    name = os.path.basename(src); out = media_out(name, day); dst = os.path.join(d, out); ext = os.path.splitext(name)[1].lower()
+    try:
+        if ext in ('.png', '.jpg', '.jpeg'):
+            from PIL import Image
+            im = Image.open(src).convert('RGB')
+            if im.width > 1400: im = im.resize((1400, round(im.height * 1400 / im.width)), Image.LANCZOS)
+            im.save(dst, 'JPEG', quality=84, optimize=True, progressive=True); return out
+        if ext == '.mp4' and shutil.which('ffmpeg'):
+            r = subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src, '-vf', 'scale=720:-2', '-c:v', 'libx264', '-preset', 'veryfast',
+                                '-crf', '28', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', dst], capture_output=True)
+            if r.returncode == 0 and os.path.getsize(dst) > 0: return out
+    except Exception:
+        pass
+    shutil.copyfile(src, dst); return out
+
+def host_media(feed, page, day, desk):
+    """Push today's media to the 'media' branch and point the feed at it. Returns (feed, number of files hosted)."""
+    import shutil, tempfile
+    names = sorted(set(re.findall(r'media/([\w.\-]+)', feed)))
+    if not names: return feed, 0
+    src_dir = os.path.join(os.path.dirname(os.path.abspath(page)), 'media')
+    wt = tempfile.mkdtemp(prefix='mmedia_'); os.rmdir(wt); url_of = {}; sha = ''
+    W = lambda *a: subprocess.run(['git', '-C', wt] + list(a), capture_output=True, text=True)
+    try:
+        have = git('fetch', '-q', 'origin', 'media', check=False).returncode == 0
+        git('worktree', 'add', '-q', '--detach', '-f', wt, 'FETCH_HEAD' if have else 'HEAD')
+        for e in os.listdir(wt):                       # keep only today's files
+            p = os.path.join(wt, e)
+            if e == '.git': continue
+            if e in ('m1', 'm2') and os.path.isdir(p):
+                for f in os.listdir(p):
+                    if not f.startswith(day.isoformat() + '_'): os.remove(os.path.join(p, f))
+            elif os.path.isdir(p): shutil.rmtree(p)
+            else: os.remove(p)
+        d = os.path.join(wt, desk); os.makedirs(d, exist_ok=True)
+        man_p = os.path.join(d, f'{day.isoformat()}_manifest.json')
+        man = json.load(open(man_p)) if os.path.exists(man_p) else {}
+        for n in names:
+            src, out = os.path.join(src_dir, n), media_out(n, day.isoformat())
+            if os.path.exists(src):
+                sig = os.path.getsize(src)
+                if man.get(n) != sig or not os.path.exists(os.path.join(d, out)):
+                    out = shrink(src, d, day.isoformat()); man[n] = sig
+                url_of[n] = out
+            elif os.path.exists(os.path.join(d, out)): url_of[n] = out
+        if not url_of: return feed, 0
+        json.dump(man, open(man_p, 'w'))
+        W('add', '-A'); tree = W('write-tree').stdout.strip()
+        sha = W('-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'commit-tree', tree, '-m', f'{desk} media {day}').stdout.strip()
+        if not sha or git('push', '-q', '-f', 'origin', f'{sha}:refs/heads/media', check=False).returncode:
+            print('media: push failed, showing the browser chart instead'); return feed, 0
+    except Exception as e:
+        print('media: skipped,', type(e).__name__, str(e)[:200]); return feed, 0
+    finally:
+        git('worktree', 'remove', '--force', wt, check=False); shutil.rmtree(wt, ignore_errors=True)
+    U = lambda n: CDN.format(sha=sha, desk=desk, name=url_of[n])
+    feed = re.sub(r'<div class="vid"><video[^>]*?src="media/([\w.\-]+)"[^>]*></video>(?:<div class="cap">.*?</div>)?</div>',
+                  lambda m: m.group(0) if m.group(1) in url_of else '', feed, flags=re.S)
+    feed = re.sub(r'<a [^>]*?href="media/([\w.\-]+)"[^>]*>.*?</a>', lambda m: m.group(0) if m.group(1) in url_of else '', feed, flags=re.S)
+    feed = re.sub(r' poster="media/([\w.\-]+)"', lambda m: f' poster="{U(m.group(1))}"' if m.group(1) in url_of else '', feed)
+    feed = re.sub(r'(href|src)="media/([\w.\-]+)"', lambda m: f'{m.group(1)}="{U(m.group(2))}"' if m.group(2) in url_of else m.group(0), feed)
+    feed = feed.replace(' data-lb>', ' data-lb target="_blank" rel="noopener">').replace('<div class="gallery"></div>', '')
+    return feed, len(url_of)
+
 # ---------------------------------------------------------------- git
 def git(*a, check=True):
     r = subprocess.run(['git', '-C', REPO] + list(a), capture_output=True, text=True)
@@ -323,7 +400,10 @@ def main():
         c0, c10, cny = [c if c and c.get('pair', pair) == pair else None for c in (c0, c10, cny)]
         levels, views = m1_views((c0, c10, cny), b15, A.now)
         if not views: raise SystemExit('PUBLISH FAILED: no chart view could be built from the cards')
-        tracker, sub, feed = m1_page_parts(A.page)
+        tracker, sub, feed = m1_page_parts(A.page, keep=True)
+        feed, nmedia = host_media(feed, A.page, day, 'm1') if (A.push and not A.dry) else (feed, 0)
+        if nmedia: print(f'media: {nmedia} files on the media branch')
+        else: tracker, sub, feed = m1_page_parts(A.page)          # no media: the browser-drawn chart as before
         until = '16:00'; zones.append(['13:30', '16:00', '#22c55e', 'NEW YORK'])
         ote = (c10 or c0 or {}).get('ote')      # optional: {lo, hi, mid, leg} from pdarrays.py
         k = day.isoformat()
